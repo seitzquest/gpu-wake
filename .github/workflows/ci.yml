@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: proxy/go.mod
+          cache: false  # no dependencies, so no go.sum to key a cache on
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make lint test
       - run: make dist
