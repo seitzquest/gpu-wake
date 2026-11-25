@@ -115,19 +115,32 @@ if command -v nvidia-smi >/dev/null; then
 fi
 systemctl enable --now gpu-wake-idle.timer
 
+step "LAN exposure of the app ports"
 # PI_* are the earlier names of the PROXY_* settings.
-proxy_ip=${PROXY_LAN_IP:-${PI_LAN_IP:-}} ports=${PROXY_ONLY_PORTS:-${PI_ONLY_PORTS:-}}
-if [[ -n $proxy_ip && -n $ports && -n ${LAN_CIDR:-} ]]; then
-  step "Firewall (ufw): only the proxy reaches $ports over the LAN"
-  if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
-    for p in $ports; do
-      ufw allow proto tcp from "$proxy_ip" to any port "$p" comment gpu-wake >/dev/null
-      ufw deny proto tcp from "$LAN_CIDR" to any port "$p" comment gpu-wake >/dev/null
-    done
-    ufw status numbered | grep -E "gpu-wake|Status" || true
-  else
-    warn "ufw is not active; ports $ports are open to the whole LAN"
-  fi
+proxy_ip=${PROXY_LAN_IP:-${PI_LAN_IP:-}} ports=${PROXY_ONLY_PORTS:-${PI_ONLY_PORTS:-${WATCH_PORTS:-}}}
+lan_ips=$(ip -o addr show scope global | awk '$2 !~ /^(tailscale|wg|tun|docker|br-|veth)/ {split($4, a, "/"); print a[1]}')
+# Ports that accept connections from the LAN: bound to every interface, or to a LAN address.
+# Ports bound only to loopback or to a VPN address (such as Tailscale) are not reachable there.
+exposed=()
+for p in $ports; do
+  while read -r addr; do
+    host=${addr%:*}; host=${host#[}; host=${host%]}
+    if [[ $host == 0.0.0.0 || $host == '*' || $host == :: ]] || grep -qxF "$host" <<<"$lan_ips"; then
+      exposed+=("$p"); break
+    fi
+  done < <(ss -Hltn "sport = :$p" 2>/dev/null | awk '{print $4}')
+done
+if command -v ufw >/dev/null && ufw status | grep -q 'Status: active' && [[ -n $proxy_ip && -n ${LAN_CIDR:-} ]]; then
+  for p in $ports; do
+    ufw allow proto tcp from "$proxy_ip" to any port "$p" comment gpu-wake >/dev/null
+    ufw deny proto tcp from "$LAN_CIDR" to any port "$p" comment gpu-wake >/dev/null
+  done
+  echo "ufw: only $proxy_ip reaches $ports over the LAN"
+  ufw status numbered | grep -E "gpu-wake|Status" || true
+elif (( ${#exposed[@]} )); then
+  warn "ports ${exposed[*]} accept connections from the whole LAN. Bind the apps to the address the proxy uses (for example a Tailscale address), or enable ufw and set PROXY_LAN_IP, LAN_CIDR and PROXY_ONLY_PORTS"
+elif [[ -n $ports ]]; then
+  echo "ports $ports listen only on loopback or VPN addresses (or not at all yet): not reachable from the LAN"
 fi
 
 step "Done"

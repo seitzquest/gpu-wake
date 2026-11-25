@@ -12,6 +12,7 @@ First public release.
 - Your own keep-awake checks in `/etc/gpu-wake/checks.d`, and `gpu-wake-idle --dry-run`.
 - Scheduled jobs: systemd timers with `WakeSystem=true` are respected, before they fire and while
   their job runs.
+- The host installer reports which app ports actually accept connections from the LAN.
 - Neutral light and dark pages, themeable through `pages.style_url` and `pages.templates_dir`.
 - Release archives for linux/arm64, linux/armv7 and linux/amd64.
 
