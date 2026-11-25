@@ -1,11 +1,16 @@
 # gpu-wake
 
-Let a GPU machine sleep, and wake it when someone needs it.
+Serve GPU apps from a machine that sleeps, safely on the public internet.
 
-gpu-wake serves web apps and APIs from a Linux GPU machine that suspends when idle. A small
-always-on machine on the same LAN (a Raspberry Pi is plenty) receives the requests. If the GPU
-host is asleep, the proxy wakes it with Wake-on-LAN, shows browsers a waiting page, holds API
-requests until the app is ready, then forwards everything with streaming intact.
+You have a GPU machine at home and apps on it that other people should be able to use: a demo,
+a portfolio project, a local LLM for friends or family. Running it all day for the occasional
+visitor wastes power and makes noise. Switching it off means the apps are down when someone
+does show up.
+
+gpu-wake lets the machine sleep and wakes it when someone needs it. A small always-on machine on
+the same LAN, such as a Raspberry Pi, takes the requests. If the GPU host is asleep, it wakes it
+with Wake-on-LAN, shows browsers a waiting page, holds API requests until the app is ready, and
+then forwards everything with streaming intact. After a quiet spell, the host suspends again.
 
 ```
 visitor ─▶ front proxy ─▶ gpu-wake-proxy ─┬─ Wake-on-LAN, if asleep ───▶ GPU host
@@ -14,20 +19,34 @@ visitor ─▶ front proxy ─▶ gpu-wake-proxy ─┬─ Wake-on-LAN, if aslee
                           a Raspberry Pi                                 it after N idle minutes
 ```
 
+## Why not just a Wake-on-LAN proxy?
+
+Sending a magic packet is easy, and several proxies do it (see [how it compares](#how-it-compares)).
+Serving strangers from a sleeping machine raises harder questions:
+
+- **Who may wake it?** Search crawlers, uptime checkers and the link previews that chat apps
+  fetch would wake a naive proxy all day. In gpu-wake, a plain GET never wakes the host on a
+  public site. Wakes are limited per visitor and per hour, and a kill switch cuts the host off
+  in one command, even across reboots.
+- **When is it really idle?** The proxy must not keep the host awake by watching it, and the host
+  has to tell a quiet desktop from a running job. gpu-wake covers both machines: the proxy
+  watches by ping only, and the host checks connections, CUDA load, SSH, desktop input, sleep
+  inhibitors, scheduled jobs and your own checks, logging every decision with its reasons.
+- **What if the GPU is busy?** One card often serves both the demos and a larger model or a
+  training run. gpu-wake shows visitors "GPU in use" instead of an out-of-memory error, gives a
+  job the whole GPU and restores the apps afterwards, and lets apps free their GPU memory on
+  request.
+
+It works with any HTTP app, needs no containers, and the proxy is one static binary that uses
+about 10 MB of memory.
+
 ## What you get
 
-- **A wake proxy.** One static Go binary with no dependencies, using about 10 MB of memory.
-  Concurrent requests share one wake. Responses and server-sent events stream without
-  buffering. The proxy watches the host by ping only, so watching never keeps it awake.
-- **Idle suspend on the host.** A timer checks once a minute for open connections to your apps,
-  CUDA load, SSH sessions, desktop input, sleep inhibitors and apps that report themselves
-  busy. Every decision is logged with its reasons.
-- **Safe on the public internet.** On public sites only an explicit action wakes the host, so
-  crawlers and link previews never do. Wakes are limited per IP and per hour, and a kill switch
-  cuts the host off in one command.
-- **Sharing one GPU.** `gpu-exclusive` gives a job the whole GPU and restores your apps
-  afterwards. `gpu-guard` shows "GPU in use" instead of an out-of-memory error. Apps can expose
-  an endpoint that releases their GPU memory on request.
+- **gpu-wake-proxy**, for the always-on machine: the waiting page, shared wakes, streaming, wake
+  policies and limits, the kill switch, "GPU in use" pausing and an admin status page.
+- **Host scripts and systemd units**, for the GPU machine: idle suspend, `stay-awake`,
+  `gpu-exclusive`, `gpu-guard`, your own keep-awake checks, respect for scheduled jobs, and a
+  sleep hook that keeps Wake-on-LAN armed.
 
 ## Requirements
 
