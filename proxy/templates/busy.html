@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>GPU in use · {{.Title}}</title>
+<meta http-equiv="refresh" content="60">
+{{template "head" .}}
+</head>
+<body>
+{{template "header" .}}
+<main class="center">
+  <div class="message">
+    {{template "art" (dict "Kind" "busy")}}
+    <p class="eyebrow">{{.Title}}</p>
+    <h1>GPU in use</h1>
+    <p class="status">Another job has the GPU. This page checks again every minute.</p>
+  </div>
+</main>
+</body>
+</html>

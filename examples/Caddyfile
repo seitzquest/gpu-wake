@@ -1,0 +1,16 @@
+# Caddy in front of gpu-wake-proxy. Caddy handles TLS certificates on its own.
+
+demo.example.org {
+	reverse_proxy 127.0.0.1:9101 {
+		# Required: wake limits are per client IP.
+		header_up X-Real-IP {remote_host}
+		# Stream responses and server-sent events, and give the host time to wake.
+		flush_interval -1
+		transport http {
+			read_timeout 300s
+		}
+	}
+}
+
+# A private upstream over Tailscale needs no Caddy at all:
+#   tailscale serve --bg --https=8443 http://127.0.0.1:9111

@@ -1,0 +1,42 @@
+{
+  "host": {
+    "mac": "00:11:22:33:44:55",
+    "ip": "192.168.1.50",
+    "broadcast": "192.168.1.255",
+    "iface": "eth0"
+  },
+  "wake_timeout_s": 150,
+  "resend_interval_s": 5,
+  "healthy_cache_s": 10,
+  "wakes_per_ip_per_hour": 6,
+  "public_wakes_per_hour": 6,
+  "admin_listen": "127.0.0.1:9180",
+  "state_file": "/var/lib/gpu-wake/bridge.json",
+  "pages": {
+    "site_name": "example.org",
+    "site_url": "https://example.org/"
+  },
+  "upstreams": [
+    {
+      "name": "demo",
+      "title": "Image demo",
+      "listen": "127.0.0.1:9101",
+      "target": "http://192.168.1.50:8000",
+      "health": "/healthz",
+      "audience": "public",
+      "wake_policy": "explicit",
+      "max_inflight": 16
+    },
+    {
+      "name": "llm",
+      "title": "Local LLM",
+      "listen": "127.0.0.1:9111",
+      "target": "http://192.168.1.50:8080",
+      "health": "/health",
+      "audience": "private",
+      "wake_policy": "any",
+      "release_path": "/api/gpu/release",
+      "max_inflight": 64
+    }
+  ]
+}

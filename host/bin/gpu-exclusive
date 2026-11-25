@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Run a GPU-heavy command with the GPU to itself, then give it back.
+#
+#   gpu-exclusive llama-server --port 5800 ...     (e.g. as a llama-swap model cmd)
+#
+# Before the command starts, the proxy pauses the listed upstreams (visitors see "GPU in use")
+# and the listed user services stop, so their VRAM is free. When the command exits (llama-swap
+# unloads the model after its ttl, or sends SIGTERM), the services start again and the pause
+# lifts. Settings in host.conf:
+#   EXCLUSIVE_UNITS     user services to stop (space separated)
+#   PAUSE_URL           the proxy's admin listener, reachable from this host
+#   PAUSE_UPSTREAMS     proxy upstreams to pause (comma separated)
+#   EXCLUSIVE_NEED_MIB  VRAM the job needs; if it would not fit even after stopping the
+#                       services, exit 75 without touching anything (environment or host.conf)
+set -uo pipefail
+EXCLUSIVE_UNITS="" PAUSE_URL="" PAUSE_UPSTREAMS=""
+_need=${EXCLUSIVE_NEED_MIB:-}
+# Settings: /etc/gpu-wake/host.conf (or pc.conf from earlier versions); GPU_WAKE_CONF overrides.
+CONF=${GPU_WAKE_CONF:-/etc/gpu-wake/host.conf}
+[[ -r $CONF ]] || CONF=/etc/gpu-wake/pc.conf
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && . "$CONF"
+# The caller's EXCLUSIVE_NEED_MIB (e.g. set per model in llama-swap) wins over host.conf.
+[[ -n $_need ]] && EXCLUSIVE_NEED_MIB=$_need
+(( $# )) || { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+log() { logger -t gpu-exclusive -- "$*"; echo "gpu-exclusive: $*" >&2; }
+pause() {
+  [[ -z $PAUSE_URL || -z $PAUSE_UPSTREAMS ]] && return 0
+  curl -fsS -m 8 -H 'Accept: application/json' --data-urlencode "names=$PAUSE_UPSTREAMS" \
+    --data-urlencode "paused=$1" --data-urlencode "reason=GPU in use ($(basename "$2"))" \
+    "$PAUSE_URL/pause" >/dev/null 2>&1 || log "could not reach the proxy to set paused=$1"
+}
+restore() {
+  # shellcheck disable=SC2086
+  [[ -z $EXCLUSIVE_UNITS ]] || systemctl --user start $EXCLUSIVE_UNITS || log "could not restart $EXCLUSIVE_UNITS"
+  pause false "$1"
+  log "released the GPU ($1 exited)"
+}
+
+# Refuse before touching anything when the job could not fit even with the demos stopped
+# (another job such as an eval holds the GPU): stopping them would only cost them a cold start.
+if [[ ${EXCLUSIVE_NEED_MIB:-0} -gt 0 ]]; then
+  read -r total used < <(nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | tr -d ',' | head -1)
+  freeable=0
+  while IFS=, read -r pid mem; do
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    for unit in $EXCLUSIVE_UNITS; do
+      grep -q "/$unit.service" "/proc/$pid/cgroup" 2>/dev/null && freeable=$(( freeable + mem ))
+    done
+  done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | tr -d ' ')
+  avail=$(( total - used + freeable ))
+  if (( avail < EXCLUSIVE_NEED_MIB )); then
+    log "refused: ${avail} MiB would be free, $1 needs ${EXCLUSIVE_NEED_MIB} MiB (GPU in use by another job)"
+    exit 75
+  fi
+fi
+
+pause true "$1"
+# shellcheck disable=SC2086
+[[ -z $EXCLUSIVE_UNITS ]] || systemctl --user stop $EXCLUSIVE_UNITS
+log "took the GPU for $1${EXCLUSIVE_UNITS:+ (stopped $EXCLUSIVE_UNITS)}"
+
+"$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
+wait "$child"; rc=$?
+wait "$child" 2>/dev/null   # after a signal, wait for the child to finish exiting
+restore "$1"
+exit "$rc"

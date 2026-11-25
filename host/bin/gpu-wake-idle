@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Idle check, run every minute by gpu-wake-idle.timer. Suspends the host after IDLE_MINUTES
+# without activity. Every decision goes to the journal: journalctl -t gpu-wake
+#
+#   gpu-wake-idle             check, and suspend if idle
+#   gpu-wake-idle --dry-run   check and print the decision; never unload or suspend
+set -uo pipefail
+DRY_RUN=0
+[[ ${1:-} == --dry-run ]] && DRY_RUN=1
+
+# Settings: /etc/gpu-wake/host.conf (or pc.conf from earlier versions); GPU_WAKE_CONF overrides.
+CONF=${GPU_WAKE_CONF:-/etc/gpu-wake/host.conf}
+[[ -r $CONF ]] || CONF=/etc/gpu-wake/pc.conf
+STATE=/run/gpu-wake
+IDLE_MINUTES=15 GPU_UTIL_THRESHOLD=10 WATCH_PORTS="" SSH_PORT=22 DESKTOP_USER="" BUSY_URLS=""
+UNLOAD_URLS="" LLAMA_SWAP_URL="" CHECKS_DIR=/etc/gpu-wake/checks.d SCHEDULE_GRACE_MINUTES=10
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && . "$CONF"
+# LLAMA_SWAP_URL is the earlier name for one llama-swap unload URL.
+[[ -n $LLAMA_SWAP_URL ]] && UNLOAD_URLS+=" ${LLAMA_SWAP_URL%/}/unload"
+
+log() {
+  if (( DRY_RUN )); then echo "$*"; return 0; fi
+  logger -t gpu-wake -- "$*"; [[ -t 1 ]] && echo "$*"; return 0
+}
+now=$(date +%s)
+# A dry run keeps its idle clock apart, so it never changes the real decision.
+(( DRY_RUN )) && STATE=${TMPDIR:-/tmp}/gpu-wake-dry-run-$(id -u)
+mkdir -p "$STATE"
+reasons=()
+
+# 1. Established connections to watched ports and sshd.
+established() {
+  local filter="" p
+  for p in "$@"; do filter+="${filter:+ or }sport = :$p"; done
+  [[ -z $filter ]] && { echo 0; return; }
+  ss -Htn state established "( $filter )" 2>/dev/null | wc -l
+}
+# shellcheck disable=SC2086
+n=$(established $WATCH_PORTS)
+(( n > 0 )) && reasons+=("connections:$n")
+n=$(established "$SSH_PORT")
+(( n > 0 )) && reasons+=("ssh:$n")
+
+# 2. GPU utilisation by compute (CUDA) processes only. Graphics work (Xorg, compositor,
+# GPU-rendered terminals) can run at 15-25 % on a high-refresh desktop with nobody there;
+# desktop use is covered by the input check below. Per-process SM % comes from pmon: the
+# busiest of 3 one-second samples, summed over compute processes, highest GPU. pmon unusable
+# → whole-GPU utilisation as before.
+compute_util() {
+  nvidia-smi pmon -c 3 -s u 2>/dev/null | awk '
+    /^#/ { if (n++) flush(); next }
+    $3 ~ /C/ && $4 ~ /^[0-9]+$/ { s[$1] += $4; seen = 1 }
+    function flush(  g) { for (g in s) if (s[g] > max) max = s[g]; delete s }
+    END { flush(); if (!seen && n < 2) exit 1; print max + 0 }'
+}
+if util=$(compute_util) || util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -n | tail -1 | tr -d ' '); then
+  [[ $util =~ ^[0-9]+$ ]] && (( util > GPU_UTIL_THRESHOLD )) && reasons+=("gpu:${util}%")
+fi
+
+# 3. Keyboard and mouse on the desktop user's X session.
+input_idle_s=""
+if [[ -n $DESKTOP_USER ]] && command -v xprintidle >/dev/null; then
+  for sid in $(loginctl list-sessions --no-legend | awk -v u="$DESKTOP_USER" '$3 == u {print $1}'); do
+    [[ $(loginctl show-session "$sid" -p Type --value) == x11 ]] || continue
+    [[ $(loginctl show-session "$sid" -p Active --value) == yes ]] || continue
+    display=$(loginctl show-session "$sid" -p Display --value)
+    leader=$(loginctl show-session "$sid" -p Leader --value)
+    xauth=$({ tr '\0' '\n' <"/proc/$leader/environ"; } 2>/dev/null | sed -n 's/^XAUTHORITY=//p')
+    [[ -z $xauth ]] && xauth=$(getent passwd "$DESKTOP_USER" | cut -d: -f6)/.Xauthority
+    if ms=$(runuser -u "$DESKTOP_USER" -- env DISPLAY="$display" XAUTHORITY="$xauth" \
+        /usr/bin/xprintidle 2>/dev/null) && [[ $ms =~ ^[0-9]+$ ]]; then
+      input_idle_s=$(( ms / 1000 ))
+    fi
+  done
+fi
+
+# 4. stay-awake flag (expiry epoch, or 0 for "until turned off"). The flag directory is
+# user-writable, so its content is validated before any arithmetic.
+FLAG=/run/gpu-wake-flags/stay-awake
+if [[ -f $FLAG && ! -L $FLAG ]]; then
+  until=$(head -c 20 "$FLAG" | tr -d '[:space:]')
+  if [[ $until =~ ^[0-9]+$ ]] && (( until == 0 || until > now )); then
+    reasons+=("stay-awake")
+  else
+    rm -f "$FLAG"
+  fi
+fi
+
+# 5. Blocking sleep inhibitors (systemd-inhibit --what=sleep, e.g. `stay-awake -- cmd`).
+inhib=$(systemd-inhibit --list --no-legend 2>/dev/null | awk '$0 ~ /sleep/ && $NF == "block"' | wc -l)
+(( inhib > 0 )) && reasons+=("inhibitor:$inhib")
+
+# 5b. "Don't go idle" requests from video players and browsers during playback: logind idle
+# blocks, and the desktop power manager's org.freedesktop.PowerManagement.Inhibit (xfce4-power-
+# manager), which is where most X11 apps register. Without this a video suspends the host.
+n=$(systemd-inhibit --list --no-legend 2>/dev/null | awk '$0 ~ /(^|[ :])idle([ :]|$)/ && $NF == "block"' | wc -l)
+(( n > 0 )) && reasons+=("idle-inhibitor:$n")
+if [[ -n $DESKTOP_USER ]] && uid=$(id -u "$DESKTOP_USER" 2>/dev/null) && [[ -S /run/user/$uid/bus ]]; then
+  pm=$(runuser -u "$DESKTOP_USER" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    timeout 3 busctl --user call org.freedesktop.PowerManagement /org/freedesktop/PowerManagement/Inhibit \
+    org.freedesktop.PowerManagement.Inhibit HasInhibit 2>/dev/null)
+  [[ $pm == "b true" ]] && reasons+=("desktop-inhibit")
+fi
+
+# 6. Services that report work in progress: GET returns JSON with "busy": true (for example an
+# agent running a long tool call with no open connection and no GPU use).
+for url in ${BUSY_URLS:-}; do
+  if curl -fsS -m 3 "$url" 2>/dev/null | grep -q '"busy":true'; then
+    reasons+=("busy:${url#*://}")
+  fi
+done
+
+# 7. Your own checks: each executable in CHECKS_DIR that exits 0 keeps the host awake. The
+# first line it prints is the logged reason (default: its file name). Each gets 10 seconds.
+if [[ -d $CHECKS_DIR ]]; then
+  for check in "$CHECKS_DIR"/*; do
+    [[ -f $check && -x $check ]] || continue
+    if out=$(timeout 10 "$check" 2>/dev/null); then
+      reason=$(head -n1 <<<"$out" | tr -cd '[:print:]' | cut -c1-80)
+      reasons+=("check:${reason:-$(basename "$check")}")
+    fi
+  done
+fi
+
+# 8. Scheduled jobs: system timers with WakeSystem=true. systemd wakes the host for them; this
+# keeps it from suspending just before one fires, and awake while the job it starts runs.
+while read -r timer; do
+  [[ -n $timer ]] || continue
+  wake="" next="" triggers=""
+  while IFS='=' read -r key value; do
+    case $key in
+      WakeSystem) wake=$value ;;
+      NextElapseUSecRealtime) next=${value#@} ;;
+      Triggers) triggers=$value ;;
+    esac
+  done < <(systemctl show "$timer" --timestamp=unix -p WakeSystem -p NextElapseUSecRealtime -p Triggers 2>/dev/null)
+  [[ $wake == yes ]] || continue
+  for unit in $triggers; do
+    systemctl is-active --quiet "$unit" && reasons+=("job:$unit")
+  done
+  if [[ $next =~ ^[0-9]+$ ]] && (( next >= now && next - now <= SCHEDULE_GRACE_MINUTES * 60 )); then
+    reasons+=("timer:$timer in $(( (next - now + 59) / 60 ))m")
+  fi
+done < <(systemctl list-units --type=timer --state=active --no-legend --plain 2>/dev/null | awk '{print $1}')
+
+# Decide. busy-at is the last moment anything was active; reset on boot (tmpfs) and resume.
+if (( ${#reasons[@]} > 0 )); then
+  echo "$now" >"$STATE/busy-at"
+  log "awake: busy (${reasons[*]})"
+  exit 0
+fi
+busy_at=$(cat "$STATE/busy-at" 2>/dev/null)
+[[ $busy_at =~ ^[0-9]+$ ]] || { busy_at=$now; echo "$now" >"$STATE/busy-at"; }
+# Desktop input is not a busy reason: the idle clock counts from the last keypress or mouse
+# move, so the host suspends IDLE_MINUTES after you leave (not 2 x IDLE_MINUTES).
+if [[ -n $input_idle_s ]] && (( now - input_idle_s > busy_at )); then busy_at=$(( now - input_idle_s )); fi
+idle_s=$(( now - busy_at ))
+if (( idle_s < IDLE_MINUTES * 60 )); then
+  log "awake: idle ${idle_s}s of $(( IDLE_MINUTES * 60 ))s${input_idle_s:+ (input ${input_idle_s}s ago)}"
+  exit 0
+fi
+
+log "suspend: idle ${idle_s}s (no connections, gpu<=${GPU_UTIL_THRESHOLD}%, no ssh, input ${input_idle_s:-n/a}s, no inhibitors)"
+(( DRY_RUN )) && { echo "dry run: would unload and suspend now"; exit 0; }
+# Ask model servers to unload first, so their VRAM is not copied to disk during suspend.
+for url in $UNLOAD_URLS; do
+  if curl -fsS -m 15 "$url" >/dev/null 2>&1; then log "suspend: unloaded ($url)"
+  else log "suspend: unload failed or server not running ($url)"; fi
+done
+echo "$now" >"$STATE/busy-at"
+# -i: blocking sleep inhibitors were checked above (step 5). With inhibitor checks on, systemctl
+# run as root also refuses whenever any user is logged in, i.e. always on a desktop PC.
+if [[ $(systemctl is-enabled suspend.target 2>/dev/null) == masked ]]; then
+  log "suspend: refused: suspend.target is masked (sudo systemctl unmask suspend.target sleep.target)"
+  exit 0
+fi
+systemctl suspend -i || log "suspend: refused by systemd (exit $?)"

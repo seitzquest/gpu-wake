@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Pause an app on the proxy while it could not load on the GPU, so visitors see "GPU in use"
+# instead of an out-of-memory error. Runs as the desktop user every 20 s (gpu-guard.timer).
+#
+# For each guard: available = free VRAM + VRAM the app's own processes already hold. Below the
+# app's need, its proxy upstreams are paused; at need + HYSTERESIS_MIB they are released. An app
+# whose service is not running is left alone (gpu-exclusive stops services and owns their pause
+# while it holds the GPU). Logs: journalctl --user -t gpu-guard
+#
+# Settings in host.conf:
+#   GPU_GUARDS             "name:user-unit:need-MiB:upstream,upstream ..." (space separated)
+#   PAUSE_URL              the proxy's admin listener
+#   HYSTERESIS_MIB         default 1024
+#   STATUS_NEED_MIB        optional: also write $GPU_STATUS_DIR/status.json saying whether a job
+#                          needing this much VRAM could start now
+#   STATUS_FREEABLE_UNITS  user services such a job may stop (default: EXCLUSIVE_UNITS)
+set -uo pipefail
+
+GPU_GUARDS="" PAUSE_URL="" HYSTERESIS_MIB=1024 EXCLUSIVE_UNITS=""
+STATUS_NEED_MIB="" STATUS_FREEABLE_UNITS="" AGENT_NEED_MIB=""
+# Settings: /etc/gpu-wake/host.conf (or pc.conf from earlier versions); GPU_WAKE_CONF overrides.
+CONF=${GPU_WAKE_CONF:-/etc/gpu-wake/host.conf}
+[[ -r $CONF ]] || CONF=/etc/gpu-wake/pc.conf
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && . "$CONF"
+STATUS_NEED_MIB=${STATUS_NEED_MIB:-$AGENT_NEED_MIB}  # AGENT_NEED_MIB: the earlier name
+STATUS_FREEABLE_UNITS=${STATUS_FREEABLE_UNITS:-$EXCLUSIVE_UNITS}
+
+[[ -n $GPU_GUARDS || -n $STATUS_NEED_MIB ]] || exit 0
+[[ -n $PAUSE_URL || -z $GPU_GUARDS ]] || { echo "gpu-guard: PAUSE_URL is not set" >&2; exit 0; }
+
+STATE=${XDG_RUNTIME_DIR:-/tmp}/gpu-guard
+mkdir -p "$STATE"
+log() { logger -t gpu-guard -- "$*"; [[ -t 1 ]] && echo "$*"; return 0; }
+
+read -r total used < <(nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | tr -d ',' | head -1)
+[[ $total =~ ^[0-9]+$ && $used =~ ^[0-9]+$ ]] || { log "nvidia-smi gave no memory figures"; exit 0; }
+free=$(( total - used ))
+procs=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | tr -d ' ')
+
+own_mib() {  # VRAM held by processes in this user unit's cgroup
+  local unit=$1 sum=0 pid mem
+  while IFS=, read -r pid mem; do
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    grep -q "/$unit.service" "/proc/$pid/cgroup" 2>/dev/null && sum=$(( sum + mem ))
+  done <<<"$procs"
+  echo "$sum"
+}
+
+set_pause() {  # upstreams paused reason
+  curl -fsS -m 8 -H 'Accept: application/json' --data-urlencode "names=$1" \
+    --data-urlencode "paused=$2" --data-urlencode "reason=$3" "$PAUSE_URL/pause" >/dev/null 2>&1
+}
+
+# Status file for jobs started on demand (for example a large model through gpu-exclusive):
+# could one start now, if it stopped the freeable services?
+if [[ $STATUS_NEED_MIB =~ ^[0-9]+$ ]]; then
+  status_dir=${GPU_STATUS_DIR:-$HOME/.local/state/gpu-guard}
+  mkdir -p "$status_dir"
+  freeable=0
+  for unit in $STATUS_FREEABLE_UNITS; do freeable=$(( freeable + $(own_mib "$unit") )); done
+  avail=$(( free + freeable ))
+  ok=false; (( avail >= STATUS_NEED_MIB )) && ok=true
+  printf '{"available":%s,"available_mib":%d,"need_mib":%d,"free_mib":%d,"checked":%d}\n' \
+    "$ok" "$avail" "$STATUS_NEED_MIB" "$free" "$(date +%s)" >"$status_dir/status.json.tmp"
+  mv "$status_dir/status.json.tmp" "$status_dir/status.json"
+fi
+
+for guard in $GPU_GUARDS; do
+  IFS=: read -r name unit need upstreams <<<"$guard"
+  [[ -n $name && -n $unit && $need =~ ^[0-9]+$ && -n $upstreams ]] || { log "bad guard: $guard"; continue; }
+  systemctl --user is-active --quiet "$unit" || continue
+  own=$(own_mib "$unit")
+  avail=$(( free + own ))
+  was=$(cat "$STATE/$name" 2>/dev/null || echo released)
+  if (( avail < need )); then
+    want=paused
+  elif (( avail >= need + HYSTERESIS_MIB )); then
+    want=released
+  else
+    want=$was
+  fi
+  if [[ $want == paused ]]; then
+    # Re-sent every run, so a restarted proxy or a lifted pause is corrected within 20 s.
+    if set_pause "$upstreams" true "another job holds the GPU: $(( avail / 1024 )) GB free, back at $(( (need + HYSTERESIS_MIB) / 1024 )) GB"; then
+      [[ $was == paused ]] || log "$name: paused (${avail} MiB available, needs ${need})"
+      echo paused >"$STATE/$name"
+    else
+      log "$name: could not reach the proxy to pause"
+    fi
+  elif [[ $was == paused ]]; then
+    if set_pause "$upstreams" false ""; then
+      log "$name: released (${avail} MiB available)"
+      echo released >"$STATE/$name"
+    else
+      log "$name: could not reach the proxy to release"
+    fi
+  fi
+done

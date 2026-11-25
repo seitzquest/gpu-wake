@@ -1,0 +1,6 @@
+[Unit]
+Description=gpu-wake: show "GPU in use" for apps that cannot load right now
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/gpu-guard

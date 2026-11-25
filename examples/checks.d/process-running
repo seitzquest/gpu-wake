@@ -1,0 +1,10 @@
+#!/bin/sh
+# Keep the host awake while a named process runs. Copy to /etc/gpu-wake/checks.d/, make it
+# executable and set the names. Exit 0 = keep awake; the first line printed is the logged reason.
+for name in restic rsync borg; do
+  if pgrep -x "$name" >/dev/null; then
+    echo "$name running"
+    exit 0
+  fi
+done
+exit 1

@@ -1,0 +1,26 @@
+[Unit]
+Description=gpu-wake proxy (wakes the GPU host on demand)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Optional GPU_CONTROL_TOKEN=... for apps whose release endpoint requires a bearer token.
+EnvironmentFile=-/etc/gpu-wake/control.env
+ExecStartPre=/usr/local/bin/gpu-wake-proxy -check -config /etc/gpu-wake/proxy.json
+ExecStart=/usr/local/bin/gpu-wake-proxy -config /etc/gpu-wake/proxy.json
+Restart=always
+RestartSec=3
+DynamicUser=yes
+# Kill-switch mode persists in /var/lib/gpu-wake/bridge.json.
+StateDirectory=gpu-wake
+# Loopback listeners only; the LAN is used just for pings, magic packets and the host.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryMax=64M
+Environment=GOMEMLIMIT=40MiB GOGC=50
+
+[Install]
+WantedBy=multi-user.target

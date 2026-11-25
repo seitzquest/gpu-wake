@@ -1,0 +1,10 @@
+[Unit]
+Description=Run gpu-guard every 20 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=20s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

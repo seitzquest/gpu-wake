@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Kill switch between the proxy and the GPU host. Runs on the proxy machine.
+#   gpu-bridge status
+#   gpu-bridge off [reason]          nothing reaches or wakes the host
+#   gpu-bridge public-off [reason]   public upstreams show "offline"; private ones still work
+#   gpu-bridge on
+#   gpu-bridge reset-breaker         allow public wakes again before the hour is over
+# The mode survives reboots. Same controls: the admin status page, or POST /bridge.
+set -euo pipefail
+ADMIN=${GPU_WAKE_ADMIN:-http://127.0.0.1:9180}
+
+show() { python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+b = b.get("bridge", b)
+reason = " (%s)" % b["reason"] if b.get("reason") else ""
+print("bridge %s%s" % (b["mode"], reason))
+tripped = ", breaker TRIPPED" if b["breaker_tripped"] else ""
+print("public wakes %d/%d this hour%s" % (b["public_wakes_last_hour"], b["public_wakes_per_hour"], tripped))
+'; }
+
+case "${1:-status}" in
+  status) curl -fsS "$ADMIN/status" | show ;;
+  on|off|public-off)
+    curl -fsS -H 'Accept: application/json' --data-urlencode "mode=$1" \
+      --data-urlencode "reason=${*:2}" "$ADMIN/bridge" | show ;;
+  reset-breaker) curl -fsS -H 'Accept: application/json' -X POST "$ADMIN/breaker/reset" | show ;;
+  *) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

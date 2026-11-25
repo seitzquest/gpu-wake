@@ -1,0 +1,11 @@
+#!/bin/sh
+# Keep the host awake while a Jellyfin client is playing something. Set JELLYFIN_URL and an API
+# key created in Jellyfin's dashboard (Dashboard > API Keys).
+JELLYFIN_URL=http://127.0.0.1:8096
+JELLYFIN_API_KEY=replace-me
+sessions=$(curl -fsS -m 5 -H "Authorization: MediaBrowser Token=\"$JELLYFIN_API_KEY\"" \
+  "$JELLYFIN_URL/Sessions?activeWithinSeconds=120" 2>/dev/null) || exit 1
+case $sessions in
+  *'"NowPlayingItem"'*) echo "jellyfin playing"; exit 0 ;;
+esac
+exit 1

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Keep the host from idle-suspending.
+#   stay-awake              until `stay-awake off`
+#   stay-awake 3h           for a duration (s/m/h/d)
+#   stay-awake -- CMD ...   while CMD runs (systemd-inhibit, also blocks manual suspend)
+#   stay-awake off | status
+set -euo pipefail
+FLAG=/run/gpu-wake-flags/stay-awake
+
+case "${1:-}" in
+  --)
+    shift
+    exec systemd-inhibit --what=sleep --who=stay-awake --why="$*" --mode=block -- "$@"
+    ;;
+  off)
+    rm -f "$FLAG"; echo "stay-awake off"
+    ;;
+  status)
+    if [[ -r $FLAG ]]; then
+      v=$(<"$FLAG")
+      if [[ $v == 0 ]]; then echo "on until turned off"
+      elif (( v > $(date +%s) )); then echo "on until $(date -d "@$v" '+%F %T')"
+      else echo "off (expired)"; fi
+    else echo "off"; fi
+    systemd-inhibit --list --no-legend | awk '$0 ~ /sleep/ && $NF == "block"' || true
+    ;;
+  "")
+    echo 0 >"$FLAG"; echo "stay-awake on until \`stay-awake off\`"
+    ;;
+  *)
+    if [[ $1 =~ ^([0-9]+)([smhd]?)$ ]]; then
+      n=${BASH_REMATCH[1]}
+      case ${BASH_REMATCH[2]} in m) n=$((n*60));; h) n=$((n*3600));; d) n=$((n*86400));; esac
+      echo $(( $(date +%s) + n )) >"$FLAG"
+      echo "stay-awake on until $(date -d "@$(<"$FLAG")" '+%F %T')"
+    else
+      sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2
+    fi
+    ;;
+esac

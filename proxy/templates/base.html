@@ -1,0 +1,106 @@
+{{/*
+  Shared blocks for every page. A theme can override any of them from pages.templates_dir:
+
+    theme    design tokens (--gw-*): colours, fonts, radius
+    header   the bar at the top
+    art      the picture beside the message; .Kind is waking, busy or offline
+*/}}
+
+{{define "theme"}}<style>
+  :root {
+    color-scheme: light dark;
+    --gw-bg: #f6f6f7; --gw-surface: #ffffff; --gw-text: #18181b; --gw-muted: #5b5b66;
+    --gw-line: #e1e1e6; --gw-control: #8a8a95;
+    --gw-accent: #4b47d6; --gw-accent-soft: #4b47d614;
+    --gw-action: #18181b; --gw-action-text: #ffffff; --gw-action-hover: #000000;
+    --gw-ok: #1d7347; --gw-busy: #8f5400; --gw-focus: #4b47d6;
+    --gw-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --gw-font-display: var(--gw-font);
+    --gw-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --gw-radius: 6px; --gw-content: 60rem; --gw-inset: clamp(16px, 3vw, 32px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --gw-bg: #141416; --gw-surface: #1d1d21; --gw-text: #f1f1f4; --gw-muted: #a8a8b3;
+      --gw-line: #33333b; --gw-control: #7b7b87;
+      --gw-accent: #aeb4ff; --gw-accent-soft: #aeb4ff1a;
+      --gw-action: #ededf2; --gw-action-text: #17171c; --gw-action-hover: #ffffff;
+      --gw-ok: #8fcaa4; --gw-busy: #e6c28b; --gw-focus: #aeb4ff;
+    }
+  }
+</style>{{end}}
+
+{{define "head"}}<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+{{template "theme" .}}
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    background: var(--gw-bg); color: var(--gw-text); font: 16px/1.5 var(--gw-font); }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--gw-focus); outline-offset: 3px; }
+  .gw-header { display: flex; align-items: center; min-height: 56px; padding: 0 var(--gw-inset);
+    border-bottom: 1px solid var(--gw-line); }
+  .gw-crumb { display: flex; align-items: center; gap: .6rem; min-width: 0; font-weight: 550; }
+  .gw-crumb a { text-decoration: none; }
+  .gw-crumb a:hover { text-decoration: underline; }
+  .gw-sep { color: var(--gw-muted); font-weight: 400; }
+  .eyebrow { margin: 0; font: 500 .875rem/1.4 var(--gw-font); color: var(--gw-muted); }
+  h1 { margin: .75rem 0; font: 600 clamp(2.2rem, 5vw, 3.6rem)/1.08 var(--gw-font-display); letter-spacing: -.025em; }
+  .status { margin: 0; min-height: 1.5em; font: 450 .875rem/1.5 var(--gw-font); color: var(--gw-muted);
+    font-variant-numeric: tabular-nums; }
+  .status button { margin-left: .5rem; }
+  /* A flush-left message with the picture beside it; stacked on small screens. */
+  .center { flex: 1; display: grid; align-items: center; padding: 64px 0;
+    width: min(var(--gw-content), calc(100% - 2 * var(--gw-inset))); margin: 0 auto; }
+  .message { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 48px; align-items: center; }
+  .message .art { grid-column: 2; grid-row: 1 / span 4; }
+  @media (max-width: 720px) {
+    .message { grid-template-columns: minmax(0, 1fr); }
+    .message .art { grid-column: 1; grid-row: auto; width: 7rem; height: 7rem; margin-bottom: 24px; }
+  }
+  button { font: 500 .875rem/1.4 var(--gw-font); min-height: 40px; padding: 9px 14px; border-radius: var(--gw-radius);
+    border: 1px solid var(--gw-control); background: var(--gw-surface); color: var(--gw-text); cursor: pointer; }
+  button.primary { background: var(--gw-action); color: var(--gw-action-text); border-color: var(--gw-action); }
+  button:hover:not(:disabled) { border-color: var(--gw-focus); }
+  button.primary:hover:not(:disabled) { background: var(--gw-action-hover); }
+  button:disabled { opacity: .45; cursor: default; }
+  .art { width: 11rem; height: 11rem; display: block; }
+  .art .track { fill: none; stroke: var(--gw-line); stroke-width: 3; }
+  .art .progress { fill: none; stroke: var(--gw-accent); stroke-width: 3; stroke-linecap: round;
+    transform: rotate(-90deg); transform-origin: 60px 60px; transition: stroke-dashoffset 1s linear; }
+  .art .chip { fill: var(--gw-surface); stroke: var(--gw-control); stroke-width: 1.5; }
+  .art .pins { stroke: var(--gw-control); stroke-width: 1.5; stroke-linecap: round; }
+  .art .core { fill: var(--gw-line); }
+  .art.waking .core { animation: core 2.4s ease-in-out infinite; }
+  .art.waking .core:nth-of-type(2) { animation-delay: .3s; }
+  .art.waking .core:nth-of-type(3) { animation-delay: .6s; }
+  .art.waking .core:nth-of-type(4) { animation-delay: .9s; }
+  .art.busy .track { stroke: var(--gw-busy); stroke-dasharray: 4 6; }
+  .art.busy .core { fill: var(--gw-busy); }
+  .art .slash { stroke: var(--gw-muted); stroke-width: 2; stroke-linecap: round; }
+  @keyframes core { 0%, 100% { fill: var(--gw-line); } 50% { fill: var(--gw-accent); } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+{{with .Style}}<link rel="stylesheet" href="{{.}}">{{end}}
+{{end}}
+
+{{define "header"}}<header class="gw-header">
+  <nav class="gw-crumb" aria-label="Location">
+    {{with .Site}}{{if .Name}}{{if .URL}}<a href="{{.URL}}">{{.Name}}</a>{{else}}<span>{{.Name}}</span>{{end}}<span class="gw-sep" aria-hidden="true">/</span>{{end}}{{end}}
+    <span>{{or .Title "gpu-wake"}}</span>
+  </nav>
+</header>{{end}}
+
+{{define "art"}}<svg class="art {{.Kind}}" viewBox="0 0 120 120" aria-hidden="true">
+  <circle cx="60" cy="60" r="54" class="track"/>
+  {{if .Progress}}<circle id="progress" cx="60" cy="60" r="54" class="progress" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>{{end}}
+  <path class="pins" d="M46 34v-6 M56 34v-6 M64 34v-6 M74 34v-6 M46 92v-6 M56 92v-6 M64 92v-6 M74 92v-6 M34 46h-6 M34 56h-6 M34 64h-6 M34 74h-6 M92 46h-6 M92 56h-6 M92 64h-6 M92 74h-6"/>
+  <rect x="34" y="34" width="52" height="52" rx="5" class="chip"/>
+  <rect x="44" y="44" width="14" height="14" rx="2" class="core"/>
+  <rect x="62" y="44" width="14" height="14" rx="2" class="core"/>
+  <rect x="44" y="62" width="14" height="14" rx="2" class="core"/>
+  <rect x="62" y="62" width="14" height="14" rx="2" class="core"/>
+  {{if eq .Kind "offline"}}<path class="slash" d="M30 90 90 30"/>{{end}}
+</svg>{{end}}

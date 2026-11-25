@@ -1,0 +1,6 @@
+[Unit]
+Description=gpu-wake: idle check (suspends the host when idle)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-wake-idle

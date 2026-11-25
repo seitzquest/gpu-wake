@@ -1,0 +1,66 @@
+# gpu-wake host settings. Installed to /etc/gpu-wake/host.conf and kept on reinstall; settings
+# added in later versions are appended. Changes apply at the next idle check (every minute),
+# except POWER_LIMIT_W: sudo systemctl restart gpu-wake-power
+
+# ---- Idle suspend (gpu-wake-idle) -------------------------------------------------------------
+
+# Suspend after this many minutes with nothing below keeping the host awake.
+IDLE_MINUTES=15
+
+# Compute (CUDA) utilisation in percent above which the GPU counts as busy. Graphics work (Xorg,
+# compositor, terminals) is not counted; keyboard and mouse use covers the desktop.
+GPU_UTIL_THRESHOLD=10
+
+# Established TCP connections to these local ports keep the host awake: the apps the proxy
+# forwards to.
+WATCH_PORTS="8000 8080"
+
+# Established connections to sshd keep the host awake.
+SSH_PORT=22
+
+# Desktop user whose keyboard and mouse activity keeps the host awake (X11, via xprintidle).
+# Empty disables the check.
+DESKTOP_USER=""
+
+# URLs that answer JSON containing "busy":true while work is in progress (space separated).
+BUSY_URLS=""
+
+# Your own checks: each executable here that exits 0 keeps the host awake, and the first line it
+# prints is the logged reason. See examples/checks.d.
+CHECKS_DIR=/etc/gpu-wake/checks.d
+
+# Don't suspend when a system timer with WakeSystem=true fires within this many minutes. The
+# job it starts keeps the host awake while it runs.
+SCHEDULE_GRACE_MINUTES=10
+
+# URLs requested right before an idle suspend, so model servers free their VRAM and it is not
+# copied to disk (space separated). llama-swap: http://127.0.0.1:8080/unload
+UNLOAD_URLS=""
+
+# ---- GPU power (gpu-wake-power) ---------------------------------------------------------------
+
+# Sustained GPU power limit in watts while awake. Empty keeps the driver default.
+POWER_LIMIT_W=""
+
+# ---- Sharing the GPU (gpu-exclusive, gpu-guard) -----------------------------------------------
+
+# The proxy's admin listener as reachable from this host, for pausing upstreams.
+PAUSE_URL=""
+
+# gpu-exclusive: user services to stop and upstreams to pause while a job holds the whole GPU.
+EXCLUSIVE_UNITS=""
+PAUSE_UPSTREAMS=""
+
+# gpu-guard: "name:user-unit:need-MiB:upstream,upstream" per app (space separated). The app's
+# upstreams are paused while it could not fit on the GPU.
+GPU_GUARDS=""
+
+# gpu-guard status file: whether a job needing this much VRAM could start now. Empty disables.
+STATUS_NEED_MIB=""
+
+# ---- LAN firewall (install.sh, only when ufw is active) ---------------------------------------
+
+# Only the proxy machine may reach these ports over the LAN. VPN access is unaffected.
+PROXY_LAN_IP=""
+LAN_CIDR=""
+PROXY_ONLY_PORTS=""

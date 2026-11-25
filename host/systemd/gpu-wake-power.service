@@ -1,0 +1,14 @@
+[Unit]
+Description=gpu-wake: GPU persistence mode and power limit
+After=nvidia-resume.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/gpu-wake/pc.conf
+EnvironmentFile=-/etc/gpu-wake/host.conf
+ExecStart=/usr/bin/nvidia-smi -pm 1
+ExecStart=/bin/sh -c '[ -z "$POWER_LIMIT_W" ] || exec /usr/bin/nvidia-smi -pl "$POWER_LIMIT_W"'
+
+[Install]
+# Also re-applied after every resume, since the driver may reset the limit.
+WantedBy=multi-user.target nvidia-resume.service

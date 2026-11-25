@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Waking · {{.Title}}</title>
+{{template "head" .}}
+</head>
+<body>
+{{template "header" .}}
+<main class="center">
+  <div class="message">
+    {{template "art" (dict "Kind" "waking" "Progress" true)}}
+    <p class="eyebrow">{{.Title}}</p>
+    <h1>Waking the GPU</h1>
+    <p class="status" id="status" role="status">waking…</p>
+    <noscript><form method="post" action="/__gpu_wake/wake"><button class="primary">Wake it</button></form></noscript>
+  </div>
+</main>
+<script>
+(() => {
+  const timeout = {{.Timeout}}, started = Date.now();
+  const ring = document.getElementById("progress"), status = document.getElementById("status");
+  let refused = "";
+  const wake = () => fetch("/__gpu_wake/wake", {method: "POST", headers: {Accept: "application/json"}})
+    .then(async r => { if (r.status === 429 || r.status === 503) refused = (await r.json()).error || "busy"; })
+    .catch(() => {});
+  {{if .Auto}}wake();{{end}}
+  async function poll() {
+    const s = Math.round((Date.now() - started) / 1000);
+    ring.style.strokeDashoffset = String(100 - Math.min(96, 100 * s / 30));
+    if (refused) { status.textContent = refused; return; }
+    try {
+      const j = await (await fetch("/__gpu_wake/status", {cache: "no-store"})).json();
+      if (j.ready) { status.textContent = "ready"; location.reload(); return; }
+      status.textContent = (j.state === "awake" ? "starting the app · " : "waking · ") + s + " s";
+    } catch { status.textContent = "waking · " + s + " s"; }
+    if (s > timeout) {
+      status.textContent = "taking longer than usual";
+      const b = document.createElement("button"); b.textContent = "Retry";
+      b.onclick = () => location.reload(); status.append(b); return;
+    }
+    if (s % 20 === 19) wake();
+    setTimeout(poll, 1000);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

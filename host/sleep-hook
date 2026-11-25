@@ -1,0 +1,18 @@
+#!/bin/sh
+# Installed as /usr/lib/systemd/system-sleep/gpu-wake. Before sleep it re-arms Wake-on-LAN on
+# the wired NIC and logs the state (TLP and NetworkManager can both change it); on resume it
+# restarts the idle clock, so the host is not suspended again right after a wake.
+case "$1/$2" in
+  pre/*)
+    iface=$(ip -o route show default | awk '$5 ~ /^(en|eth)/ {print $5; exit}')
+    if [ -n "$iface" ]; then
+      ethtool -s "$iface" wol g 2>/dev/null
+      wol=$(ethtool "$iface" 2>/dev/null | awk '/^[[:space:]]*Wake-on:/ {print $2}')
+      wake=$(cat "/sys/class/net/$iface/device/power/wakeup" 2>/dev/null)
+      logger -t gpu-wake "sleep: entering $2 ($iface wake-on:${wol:-?} wakeup:${wake:-?})"
+    else
+      logger -t gpu-wake "sleep: entering $2 (no wired default route: WoL not armed)"
+    fi ;;
+  post/*) mkdir -p /run/gpu-wake; date +%s >/run/gpu-wake/busy-at
+          logger -t gpu-wake "sleep: resumed from $2" ;;
+esac
