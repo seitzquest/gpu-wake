@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## v0.1.0 (2026-11-25)
 
 First public release.
 
@@ -16,7 +16,7 @@ First public release.
 - Neutral light and dark pages, themeable through `pages.style_url` and `pages.templates_dir`.
 - Release archives for linux/arm64, linux/armv7 and linux/amd64.
 
-### Coming from the private version
+### Upgrading from earlier, unreleased versions
 
 - The config key `pc` is now `host`, `style_url` moved to `pages.style_url`, and
   `audience: tailnet` is now `audience: private`. The old names are still accepted.
